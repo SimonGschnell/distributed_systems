@@ -7,6 +7,8 @@
 #include <string.h>
 #include <dirent.h>
 #include <ctype.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
 // global variable for the program name
 char* program_name;
@@ -42,7 +44,7 @@ void getCWD(char* cwd){ // out parameter
     }
 }
 
-void check_directory(char* path, char** filenames, int filesnames_size, bool option_i=false, bool option_R=false, const char* prefix_path=""){
+void check_directory(char* path, char* filename, bool option_i=false, bool option_R=false, const char* prefix_path=""){
     
     DIR* dir_path;
     if((dir_path = opendir(path)) == NULL){
@@ -63,24 +65,20 @@ void check_directory(char* path, char** filenames, int filesnames_size, bool opt
 
         if( strcmp(dir_entry->d_name,".")!=0 && strcmp(dir_entry->d_name,"..")!=0 && dir_entry->d_type == DT_DIR){
             directory_list[directory_list_index] = dir_entry;
-            printf("directory added: %s\n",dir_entry->d_name);
             ++directory_list_index;
         }
 
         //debug dir_entries - printf("dir_entry = %s\n",dir_entry->d_name);
-        int i =0;
-        
-        while(i<filesnames_size){
-            if(option_i){
-                to_lower(dir_entry->d_name);
-                to_lower(filenames[i]);
-            }
-            if(strcmp(dir_entry->d_name,filenames[i])==0)
-            {
-                printf("<%s>:<%s>\n",filenames[i], complete_path_to_file(cwd, prefix_path, filenames[i]));
-            }
-            ++i;
+    
+        if(option_i){
+            to_lower(dir_entry->d_name);
+            to_lower(filename);
         }
+        if(strcmp(dir_entry->d_name,filename)==0)
+        {
+            printf("<%ld>:<%s>:<%s>\n",(long)getpid(),filename, complete_path_to_file(cwd, prefix_path, filename));
+        }
+        
     }
 
     if(option_R){ // recursively search for the files in subdirectories
@@ -89,25 +87,21 @@ void check_directory(char* path, char** filenames, int filesnames_size, bool opt
             char new_prefix_path[1024]; // Adjust size as needed
             snprintf(new_prefix_path, sizeof(new_prefix_path), "%s%s/", prefix_path, directory_list[j]->d_name);
 
-            check_directory(complete_path_to_file(cwd,prefix_path,directory_list[j]->d_name),filenames,filesnames_size,option_i,option_R,new_prefix_path);
+            check_directory(complete_path_to_file(cwd,prefix_path,directory_list[j]->d_name),filename,option_i,option_R,new_prefix_path);
             ++j;
         }
     }
-
 }
-
 
 int main(int argc, char** argv){
 
     // setting global program_name
     program_name = argv[0];
 
-
     char option;
     int option_R=0;
     int option_i=0;
     bool error = false;
-
 
     while ( (option = getopt(argc,argv,"Ri")) != -1){
        switch(option){
@@ -146,10 +140,47 @@ int main(int argc, char** argv){
         filenames_index++;
     }
 
-    check_directory(dir_path, filenames, filesnames_size, option_i, option_R);
-    
+    // getting the pid of the parent process
+    pid_t parentPID = getpid();
+    pid_t child = 0;
 
-    printf("exit with success\n");
+    // create child process for every filename
+    for(int i=0; i< filesnames_size; i++){
+        // only fork a new process when the parent process is running
+        if(getpid() == parentPID) child = fork();
+        
+        switch(child){
+            case -1: perror("error while forking child process"); exit(EXIT_FAILURE);
+            // child process
+            case 0: check_directory(dir_path, filenames[i], option_i, option_R); exit(EXIT_SUCCESS);
+            // parent process
+            default: break;
+            
+        }
+    }
+
+    // waiting for the child processes and printing their exit status
+    for(int i =0; i< filesnames_size; i++){
+        int status;
+        child = wait(&status);
+        if(child == -1){
+             perror("Failed to wait for child process\n");
+        }
+        else if(WIFEXITED(status) && WEXITSTATUS(status) == EXIT_SUCCESS){
+             printf("pid:<%ld>:exited successfully\n",(long)child);
+        }
+        else if(WIFEXITED(status)){
+             printf("pid:<%ld>:exited with status code <%d>\n",(long)child, WEXITSTATUS(status));
+        }
+        else if(WIFSIGNALED(status)){
+             printf("pid:<%ld>:terminated due to uncaught signal <%d>\n",(long)child, WTERMSIG(status));
+        }
+        else if(WIFSTOPPED(status)){
+             printf("pid:<%ld>:stopped due to signal <%d>\n",(long)child, WSTOPSIG(status));
+        }
+    }
+
+    printf("pid: %ld - parent process exited with success\n", (long)getpid());
 
     return 0;
 }
